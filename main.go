@@ -54,11 +54,38 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// "any" and "interface{}" are identical. "any" is more modern and idiomatic
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
+	respBody := payload
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshaling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, err = w.Write(data)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	type errorResponse struct {
+		Error string `json:"error"`
+	}
+	payload := errorResponse{
+		Error: msg,
+	}
+	respondWithJSON(w, code, payload)
+}
+
 func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
 	}
-
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -68,48 +95,17 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(params.Body) <= 140 {
-		type valid struct {
-			Valid bool `json:"valid"`
-		}
-
-		respBody := valid{
-			Valid: true,
-		}
-		data, err := json.Marshal(respBody)
-		if err != nil {
-			log.Printf("Error marshaling JSON: %s", err)
-			w.WriteHeader(500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, err = w.Write(data)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	} else {
-		type error struct {
-			Error string `json:"error"`
-		}
-		respBody := error{
-			Error: "Chirp is too long",
-		}
-		data, err := json.Marshal(respBody)
-		if err != nil {
-			log.Printf("Error marshaling JSON: %s", err)
-			w.WriteHeader(500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		_, err = w.Write(data)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
-		}
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+		return
 	}
+	type valid struct {
+		Valid bool `json:"valid"`
+	}
+	payload := valid{
+		Valid: true,
+	}
+	respondWithJSON(w, http.StatusOK, payload)
 }
 
 func main() {
