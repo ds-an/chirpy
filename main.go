@@ -2,6 +2,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,10 +10,25 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/ds-an/chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries *database.Queries
+	platformType string
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 var profane = map[string]struct{}{
@@ -46,9 +62,20 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (cfg *apiConfig) metricsResetHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	if cfg.platformType != "dev" {
+		respondWithError(w, http.StatusForbidden, "Forbidden")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	cfg.fileserverHits.Store(0)
+
+	err := cfg.dbQueries.ResetUsers(r.Context())
+	if err != nil {
+		log.Printf("Error resetting users: %s", err)
+		w.WriteHeader(500)
+		return
+	}
 }
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
@@ -100,14 +127,14 @@ func replaceProfane(s string) string {
 }
 
 func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
+	type chirp struct {
 		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
+	params := chirp{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
+		log.Printf("Error decoding chirp: %s", err)
 		w.WriteHeader(500)
 		return
 	}
@@ -125,29 +152,75 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, payload)
 }
 
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	type email struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := email{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding email: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("Error creating user: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	newUser := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	respondWithJSON(w, http.StatusCreated, newUser)
+}
+
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Printf("Error loading environment variables: %s", err)
+		return
+	}
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Printf("Error opening Postgres db: %s", err)
+		return
+	}
+	platformType := os.Getenv("PLATFORM")
+
+
 	mux := http.NewServeMux()
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
+		dbQueries: database.New(db),
+		platformType: platformType,
 	}
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(appHandler))
 	hzh := http.HandlerFunc(healthzHandler)
 	mux.Handle("GET /api/healthz", hzh)
 	mh := http.HandlerFunc(apiCfg.metricsHandler)
 	mux.Handle("GET /admin/metrics", mh)
-	mrh := http.HandlerFunc(apiCfg.metricsResetHandler)
+	mrh := http.HandlerFunc(apiCfg.resetHandler)
 	mux.Handle("POST /admin/reset", mrh)
 
 	vch := http.HandlerFunc(validateChirpHandler)
 	mux.Handle("POST /api/validate_chirp", vch)
+	
+	cuh := http.HandlerFunc(apiCfg.createUserHandler)
+	mux.Handle("POST /api/users", cuh)
 
 	server := http.Server{
 		Addr: ":8080",
 		Handler: mux,
 	}
 
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
