@@ -7,11 +7,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+}
+
+var profane = map[string]struct{}{
+	"kerfuffle": {},
+	"sharbert":  {},
+	"fornax":    {},
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -82,6 +89,16 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	respondWithJSON(w, code, payload)
 }
 
+func replaceProfane(s string) string {
+	splitString := strings.Split(s, " ")
+	for i ,word := range splitString {
+		if _, ok := profane[strings.ToLower(word)]; ok {
+			splitString[i] = "****"
+		}
+	}
+	return strings.Join(splitString, " ")
+}
+
 func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
@@ -99,11 +116,11 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
-	type valid struct {
-		Valid bool `json:"valid"`
+	type CleanText struct {
+		CleanedBody string `json:"cleaned_body"`
 	}
-	payload := valid{
-		Valid: true,
+	payload := CleanText{
+		CleanedBody: replaceProfane(params.Body),
 	}
 	respondWithJSON(w, http.StatusOK, payload)
 }
