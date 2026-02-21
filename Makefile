@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build-server
 
-.PHONY: build-server goose-up goose-down
+.PHONY: build-server goose-up goose-down sqlc-generate
 
 build-server:
 	go build -o out && ./out
@@ -10,6 +10,9 @@ goose-up:
 
 goose-down:
 	cd sql/schema/ && goose postgres postgres://postgres:postgres@localhost:5432/chirpy down && cd -
+
+sqlc-generate:
+	sqlc generate
 
 # fmt:
 # 	go fmt ./...

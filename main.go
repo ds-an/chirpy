@@ -228,6 +228,29 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, chirpsPayload)
 }
 
+func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request) {
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		log.Printf("Error parsing chirp ID: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		log.Printf("Error getting chirp from db: %s", err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	chirpPayload := Chirp{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: replaceProfane(chirp.Body),
+		UserID: chirp.UserID,
+	}
+	respondWithJSON(w, http.StatusOK, chirpPayload)
+}
+
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	type email struct {
 		Email string `json:"email"`
@@ -289,6 +312,8 @@ func main() {
 	mux.Handle("POST /api/chirps", cch)
 	gcsh := http.HandlerFunc(apiCfg.getChirpsHandler)
 	mux.Handle("GET /api/chirps", gcsh)
+	gcidh := http.HandlerFunc(apiCfg.getChirpByIDHandler)
+	mux.Handle("GET /api/chirps/{chirpID}", gcidh)
 	
 	cuh := http.HandlerFunc(apiCfg.createUserHandler)
 	mux.Handle("POST /api/users", cuh)
