@@ -208,6 +208,26 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 	respondWithJSON(w, http.StatusCreated, payload)
 }
 
+func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.dbQueries.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("Error adding chirp to db: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	chirpsPayload := []Chirp{}
+	for _, chirp := range chirps {
+		chirpsPayload = append(chirpsPayload, Chirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body: replaceProfane(chirp.Body),
+			UserID: chirp.UserID,
+		})
+	}
+	respondWithJSON(w, http.StatusOK, chirpsPayload)
+}
+
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	type email struct {
 		Email string `json:"email"`
@@ -267,6 +287,8 @@ func main() {
 
 	cch := http.HandlerFunc(apiCfg.createChirpHandler)
 	mux.Handle("POST /api/chirps", cch)
+	gcsh := http.HandlerFunc(apiCfg.getChirpsHandler)
+	mux.Handle("GET /api/chirps", gcsh)
 	
 	cuh := http.HandlerFunc(apiCfg.createUserHandler)
 	mux.Handle("POST /api/users", cuh)
