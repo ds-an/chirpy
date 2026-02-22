@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ds-an/chirpy/internal/auth"
 	"github.com/ds-an/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -37,6 +38,11 @@ type Chirp struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Body      string    `json:"body"`
 	UserID    uuid.UUID `json:"user_id"`
+}
+
+type emailPassword struct {
+	Email string `json:"email"`
+	Password string `json:"password"`
 }
 
 var profane = map[string]struct{}{
@@ -252,18 +258,31 @@ func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
-	type email struct {
-		Email string `json:"email"`
-	}
 	decoder := json.NewDecoder(r.Body)
-	params := email{}
+	params := emailPassword{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding email: %s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if params.Email == "" || params.Password == "" {
+		log.Printf("Error, empty field: %s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
 		w.WriteHeader(500)
 		return
 	}
-	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	userParams := database.CreateUserParams{
+		Email: params.Email,
+		HashedPassword: hashedPassword,
+	}
+	user, err := cfg.dbQueries.CreateUser(r.Context(), userParams)
 	if err != nil {
 		log.Printf("Error creating user: %s", err)
 		w.WriteHeader(500)
@@ -276,6 +295,45 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		Email: user.Email,
 	}
 	respondWithJSON(w, http.StatusCreated, newUser)
+}
+
+func (cfg *apiConfig) userLoginHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	params := emailPassword{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding email: %s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if params.Email == "" || params.Password == "" {
+		log.Printf("Error, empty field: %s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	const loginErr = "Incorrect email or password"
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, loginErr)
+		return
+	}
+	match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized,  loginErr)
+		return
+	}
+	if !match {
+		respondWithError(w, http.StatusUnauthorized,   loginErr)
+		return
+	}
+	userPayload := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	respondWithJSON(w, http.StatusOK, userPayload)
 }
 
 func main() {
@@ -317,6 +375,8 @@ func main() {
 	
 	cuh := http.HandlerFunc(apiCfg.createUserHandler)
 	mux.Handle("POST /api/users", cuh)
+	ulh := http.HandlerFunc(apiCfg.userLoginHandler)
+	mux.Handle("POST /api/login", ulh)
 
 	server := http.Server{
 		Addr: ":8080",
