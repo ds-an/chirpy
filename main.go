@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries *database.Queries
 	platformType string
+	jwtSecret string
 }
 
 type User struct {
@@ -30,6 +31,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token			string		`json:"token"`
 }
 
 type Chirp struct {
@@ -40,9 +42,10 @@ type Chirp struct {
 	UserID    uuid.UUID `json:"user_id"`
 }
 
-type emailPassword struct {
+type loginParams struct {
 	Email string `json:"email"`
 	Password string `json:"password"`
+	ExpiresInSeconds *int `json:"expires_in_seconds"`
 }
 
 var profane = map[string]struct{}{
@@ -169,7 +172,7 @@ func replaceProfane(s string) string {
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type incomingChirp struct {
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		// UserID uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := incomingChirp{}
@@ -180,6 +183,17 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	authToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userID, err := auth.ValidateJWT(authToken, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
 		return
@@ -187,7 +201,7 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 
 	chirpParams := database.CreateChirpParams{
 		Body: params.Body,
-		UserID: params.UserID,
+		UserID: userID,
 	}
 
 	chirp, err := cfg.dbQueries.CreateChirp(r.Context(), chirpParams)
@@ -259,7 +273,7 @@ func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	params := emailPassword{}
+	params := loginParams{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding email: %s", err)
@@ -299,7 +313,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) userLoginHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	params := emailPassword{}
+	params := loginParams{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding email: %s", err)
@@ -310,6 +324,10 @@ func (cfg *apiConfig) userLoginHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error, empty field: %s", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+	defaultExpirationTime := 60 * 60
+	if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > defaultExpirationTime{
+		params.ExpiresInSeconds = &defaultExpirationTime 
 	}
 
 	const loginErr = "Incorrect email or password"
@@ -327,11 +345,20 @@ func (cfg *apiConfig) userLoginHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusUnauthorized,   loginErr)
 		return
 	}
+
+	jwtToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Duration(*params.ExpiresInSeconds) * time.Second)
+	if err != nil {
+		jwtErr := fmt.Sprintf("Failed to create JWT token for user with id %s", user.ID) 
+		respondWithError(w, http.StatusInternalServerError, jwtErr)
+		return
+	}
+
 	userPayload := User{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: jwtToken,
 	}
 	respondWithJSON(w, http.StatusOK, userPayload)
 }
@@ -349,6 +376,7 @@ func main() {
 		return
 	}
 	platformType := os.Getenv("PLATFORM")
+	jwtSecret := os.Getenv("JWT_SECRET")
 
 
 	mux := http.NewServeMux()
@@ -357,6 +385,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		dbQueries: database.New(db),
 		platformType: platformType,
+		jwtSecret: jwtSecret,
 	}
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(appHandler))
 	hzh := http.HandlerFunc(healthzHandler)
