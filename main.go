@@ -378,6 +378,53 @@ func (cfg *apiConfig) userLoginHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, userPayload)
 }
 
+func (cfg *apiConfig) userUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	decoder := json.NewDecoder(r.Body)
+	newLoginParams := loginParams{}
+	err = decoder.Decode(&newLoginParams)
+	if err != nil {
+		log.Printf("Error decoding new login parameters: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(newLoginParams.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userParams := database.UpdateUserParams{
+		Email: newLoginParams.Email,
+		HashedPassword: hashedPassword,
+		ID: userID,
+	}
+	userUpdated, err := cfg.dbQueries.UpdateUser(r.Context(), userParams)
+	if err != nil {
+		log.Printf("Error creating user: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	newUser := User{
+		ID: userUpdated.ID,
+		CreatedAt: userUpdated.CreatedAt,
+		UpdatedAt: userUpdated.UpdatedAt,
+		Email: userUpdated.Email,
+	}
+	respondWithJSON(w, http.StatusOK, newUser)
+}
+
 func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
 	tokenString, err := auth.GetBearerToken(r.Header)
 	if err != nil {
@@ -481,6 +528,8 @@ func main() {
 	mux.Handle("POST /api/users", cuh)
 	ulh := http.HandlerFunc(apiCfg.userLoginHandler)
 	mux.Handle("POST /api/login", ulh)
+	uuh := http.HandlerFunc(apiCfg.userUpdateHandler)
+	mux.Handle("PUT /api/users", uuh)
 
 	rfh := http.HandlerFunc(apiCfg.refreshHandler)
 	mux.Handle("POST /api/refresh", rfh)
