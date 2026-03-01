@@ -272,6 +272,44 @@ func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request
 	respondWithJSON(w, http.StatusOK, chirpPayload)
 }
 
+func (cfg *apiConfig) deleteChirpByIDHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		log.Printf("Error parsing chirp ID: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		log.Printf("Error getting chirp from db: %s", err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if userID != chirp.UserID {
+		chirpErr := fmt.Sprintf("Chirp doesn't belong to user %s", userID) 
+		respondWithError(w, http.StatusForbidden, chirpErr) 
+		return
+	}
+
+	err = cfg.dbQueries.DeleteChirp(r.Context(), chirp.ID)
+	if err != nil {
+		log.Printf("Error deleting chirp from db: %s", err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	params := loginParams{}
@@ -290,7 +328,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	hashedPassword, err := auth.HashPassword(params.Password)
 	if err != nil {
 		log.Printf("Error hashing password: %s", err)
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	userParams := database.CreateUserParams{
@@ -523,6 +561,8 @@ func main() {
 	mux.Handle("GET /api/chirps", gcsh)
 	gcidh := http.HandlerFunc(apiCfg.getChirpByIDHandler)
 	mux.Handle("GET /api/chirps/{chirpID}", gcidh)
+	dcidh := http.HandlerFunc(apiCfg.deleteChirpByIDHandler)
+	mux.Handle("DELETE /api/chirps/{chirpID}", dcidh)
 	
 	cuh := http.HandlerFunc(apiCfg.createUserHandler)
 	mux.Handle("POST /api/users", cuh)
